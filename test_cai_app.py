@@ -1,25 +1,32 @@
 import streamlit as st
 import pandas as pd
 import datetime
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# Firebase 초기화
+if "firebase" not in st.session_state:
+    cred = credentials.Certificate("serviceAccountKey.json")
+    firebase_admin.initialize_app(cred)
+    st.session_state.firebase = True
+
+db = firestore.client()
 
 st.set_page_config(page_title="발목 상태 기록", page_icon="👣", layout="centered")
-
-# 세션 초기화
-if "user" not in st.session_state:
-    st.session_state.user = None
-if "records" not in st.session_state:
-    st.session_state.records = {}   # 참여자별 기록 dict
-if "page" not in st.session_state:
-    st.session_state.page = "start"
 
 # 한국 시간 (KST)
 KST = datetime.timezone(datetime.timedelta(hours=9))
 today = str(datetime.datetime.now(KST).date())
 
+# 세션 초기화
+if "user" not in st.session_state:
+    st.session_state.user = None
+if "page" not in st.session_state:
+    st.session_state.page = "start"
+
 # ------------------- 시작 화면 -------------------
 if st.session_state.page == "start":
     st.title("👣 발목 기록 앱")
-    st.subheader("시작하려면 선택하세요")
 
     action = st.radio("동작 선택", ["회원가입", "로그인"])
 
@@ -27,127 +34,131 @@ if st.session_state.page == "start":
         new_user = st.text_input("새 아이디를 입력하세요")
         if st.button("회원가입"):
             if new_user.strip():
-                if new_user in st.session_state.records:
-                    st.error("⚠️ 이미 존재하는 아이디입니다. 다른 아이디를 사용하세요.")
+                doc_ref = db.collection("users").document(new_user)
+                if doc_ref.get().exists:
+                    st.error("⚠️ 이미 존재하는 아이디입니다.")
                 else:
-                    st.session_state.records[new_user] = []
-                    st.success("✅ 회원가입 완료! 이제 로그인하세요.")
-            else:
-                st.error("아이디를 입력해주세요.")
+                    doc_ref.set({"join_date": today})
+                    st.success("✅ 회원가입 완료! 로그인하세요.")
 
     elif action == "로그인":
-        user = st.text_input("아이디를 입력하세요")
+        user = st.text_input("아이디 입력")
         if st.button("로그인"):
             if user.strip():
-                if user in st.session_state.records:
+                doc_ref = db.collection("users").document(user)
+                if doc_ref.get().exists:
                     st.session_state.user = user
                     st.session_state.page = "home"
                     st.rerun()
                 else:
-                    st.error("⚠️ 등록되지 않은 아이디입니다. 먼저 회원가입을 해주세요.")
-            else:
-                st.error("아이디를 입력해주세요.")
+                    st.error("⚠️ 등록되지 않은 아이디입니다. 회원가입을 먼저 해주세요.")
 
 # ------------------- 홈 화면 -------------------
 elif st.session_state.page == "home":
     st.title(f"👋 환영합니다, {st.session_state.user} 님")
-    st.write("최근 발목 상태를 확인하고 관리하세요!")
 
     if st.button("✍️ 오늘 발목 기록하기 / 수정하기"):
         st.session_state.page = "record"
         st.rerun()
 
-    user_records = st.session_state.records[st.session_state.user]
-    df = pd.DataFrame(user_records)
+    # Firestore에서 사용자 데이터 불러오기
+    records = db.collection("ankle_records").where("user", "==", st.session_state.user).stream()
+    data = [r.to_dict() for r in records]
+    df = pd.DataFrame(data)
 
     if not df.empty:
+        df = df.sort_values("date")
         st.subheader("📊 최근 기록 요약")
         st.dataframe(df.tail(7))
 
-        # 그래프 (최근 데이터 기준)
-        st.line_chart(df.set_index("날짜")[["불안정감", "통증", "활동"]])
+        st.line_chart(df.set_index("date")[["instability", "pain", "activity"]])
 
-        # 경고 멘트
+        # ----- 고급 경고 분석 -----
         recent = df.tail(7)
-        avg_pain = recent["통증"].mean()
-        incidents = (recent["삐끗여부"] == "있음").sum()
+        avg_pain = recent["pain"].mean()
+        incidents = (recent["sprain"] == "있음").sum()
+        trend_increase = False
+        if len(recent) >= 2 and recent["pain"].iloc[-1] - recent["pain"].iloc[0] >= 2:
+            trend_increase = True
+
         if incidents >= 2:
-            st.warning("⚠️ 최근 삐끗이 자주 발생했습니다. 발목 관리가 필요합니다!")
+            st.warning("⚠️ 최근 일주일 동안 발목 삐끗이 2회 이상 발생했습니다. 발목 안정화 운동과 휴식을 권장합니다.")
         elif avg_pain >= 6:
-            st.warning("⚠️ 최근 통증이 심해지고 있어요. 전문가 상담이 필요할 수 있습니다.")
+            st.warning("⚠️ 최근 평균 통증이 높습니다. 발목 사용을 줄이고 회복에 집중하세요.")
+        elif trend_increase:
+            st.warning("⚠️ 통증이 점점 증가하는 추세입니다. 과사용에 주의하세요.")
+        else:
+            st.info("💪 최근 발목 상태가 안정적입니다. 꾸준히 관리하세요!")
     else:
         st.info("아직 기록이 없습니다. 상단 버튼을 눌러 첫 기록을 남겨보세요!")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("🚪 로그아웃"):
-            st.session_state.page = "start"
-            st.session_state.user = None
-            st.rerun()
-    with col2:
-        if st.button("❌ 계정 삭제"):
-            del st.session_state.records[st.session_state.user]
-            st.success("계정이 삭제되었습니다.")
-            st.session_state.page = "start"
-            st.session_state.user = None
-            st.rerun()
+    # ----- 건강 정보 섹션 -----
+    st.markdown("---")
+    st.subheader("📚 발목 건강 정보")
+
+    with st.expander("👟 발 모양에 따른 신발 추천"):
+        st.info("✅ **평발**: 아치를 지지하는 신발 권장\n✅ **요족**: 충격 흡수가 좋은 쿠션 신발 권장\n✅ **정상 아치**: 일반 운동화 가능")
+
+    with st.expander("❄️ 냉찜질 vs 온찜질"):
+        st.info("❄️ **냉찜질**: 급성 손상, 부종·통증 감소에 효과적 (운동 직후)\n🔥 **온찜질**: 만성 통증, 근육 긴장 완화 (운동 전 준비)")
+
+    with st.expander("🏥 적절한 발목 테이핑"):
+        st.info("운동 전 안정성 확보, 운동 중 부상 예방, 운동 후 회복 보조.\n⚠️ 전문가 지도 또는 교육 영상 참고 후 실시 권장")
+
+    if st.button("🚪 로그아웃"):
+        st.session_state.page = "start"
+        st.session_state.user = None
+        st.rerun()
 
 # ------------------- 기록 화면 -------------------
 elif st.session_state.page == "record":
     st.title("✍️ 오늘 발목 기록하기")
 
     user = st.session_state.user
-    user_records = st.session_state.records[user]
-
-    # 오늘 기록 확인
-    existing_record = None
-    for rec in user_records:
-        if rec["날짜"] == today:
-            existing_record = rec
-            break
+    doc_id = f"{user}_{today}"
+    doc_ref = db.collection("ankle_records").document(doc_id)
+    existing_record = doc_ref.get().to_dict()
 
     with st.form("ankle_form"):
-        condition = st.slider("오늘 발목 불안정감", 0, 10, existing_record["불안정감"] if existing_record else 5)
-        pain = st.slider("오늘 통증 정도", 0, 10, existing_record["통증"] if existing_record else 3)
-        activity = st.slider("오늘 활동 수준", 0, 10, existing_record["활동"] if existing_record else 5)
+        condition = st.slider("오늘 발목 불안정감", 0, 10, existing_record["instability"] if existing_record else 5)
+        pain = st.slider("오늘 통증 정도", 0, 10, existing_record["pain"] if existing_record else 3)
+        activity = st.slider("오늘 활동 수준", 0, 10, existing_record["activity"] if existing_record else 5)
 
         incident = st.radio("오늘 삐끗/접질림 발생 여부",
                             ["없음", "있음"],
-                            index=["없음", "있음"].index(existing_record["삐끗여부"]) if existing_record else 0)
+                            index=["없음", "있음"].index(existing_record["sprain"]) if existing_record else 0)
         balance = st.radio("균형감/불안정감 인지",
                            ["없음", "있음"],
-                           index=["없음", "있음"].index(existing_record["균형감"]) if existing_record else 0)
+                           index=["없음", "있음"].index(existing_record["balance"]) if existing_record else 0)
 
         with st.expander("더 자세히 기록할까요?"):
             management = st.multiselect(
-                "🏥 오늘 한 관리",
+                "🏥 오늘 한 관리 (해당되는 항목 모두 선택)",
                 ["테이핑", "보호대", "냉찜질", "온찜질", "스트레칭", "마사지"],
-                default=existing_record["관리"].split(", ") if existing_record and existing_record["관리"] else []
+                default=existing_record["management"].split(", ") if existing_record and existing_record["management"] else []
             )
             shoe = st.radio("👟 주로 신은 신발",
                             ["운동화", "구두", "슬리퍼", "맨발", "부츠"],
-                            index=["운동화", "구두", "슬리퍼", "맨발", "부츠"].index(existing_record["신발"]) if existing_record else 0)
+                            index=["운동화", "구두", "슬리퍼", "맨발", "부츠"].index(existing_record["shoe"]) if existing_record else 0)
             surface = st.radio("🛤️ 주로 걸은 지면",
                                ["평지", "계단", "경사로", "울퉁불퉁", "미끄러움"],
-                               index=["평지", "계단", "경사로", "울퉁불퉁", "미끄러움"].index(existing_record["지면"]) if existing_record else 0)
+                               index=["평지", "계단", "경사로", "울퉁불퉁", "미끄러움"].index(existing_record["surface"]) if existing_record else 0)
 
         submitted = st.form_submit_button("저장하기")
         if submitted:
             record = {
-                "날짜": today,
-                "불안정감": condition,
-                "통증": pain,
-                "활동": activity,
-                "삐끗여부": incident,
-                "균형감": balance,
-                "관리": ", ".join(management),
-                "신발": shoe,
-                "지면": surface
+                "user": user,
+                "date": today,
+                "instability": condition,
+                "pain": pain,
+                "activity": activity,
+                "sprain": incident,
+                "balance": balance,
+                "management": ", ".join(management),
+                "shoe": shoe,
+                "surface": surface
             }
-            if existing_record:
-                # 수정: 오늘 기록 덮어쓰기
-                user_records.remove(existing_record)
-            user_records.append(record)
+            doc_ref.set(record)  # 수정 포함 저장
             st.success("오늘 기록이 저장/수정되었습니다 ✅")
             st.session_state.page = "home"
             st.rerun()
