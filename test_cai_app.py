@@ -4,21 +4,20 @@ import datetime
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# Firebase 초기화
-if "firebase" not in st.session_state:
+# 🔹 Firebase 초기화 (중복 방지)
+if not firebase_admin._apps:
     cred = credentials.Certificate("serviceAccountKey.json")
     firebase_admin.initialize_app(cred)
-    st.session_state.firebase = True
 
 db = firestore.client()
 
 st.set_page_config(page_title="발목 상태 기록", page_icon="👣", layout="centered")
 
-# 한국 시간 (KST)
+# 🔹 한국 시간
 KST = datetime.timezone(datetime.timedelta(hours=9))
 today = str(datetime.datetime.now(KST).date())
 
-# 세션 초기화
+# 🔹 세션 초기화
 if "user" not in st.session_state:
     st.session_state.user = None
 if "page" not in st.session_state:
@@ -61,7 +60,7 @@ elif st.session_state.page == "home":
         st.session_state.page = "record"
         st.rerun()
 
-    # Firestore에서 사용자 데이터 불러오기
+    # 🔹 Firestore에서 데이터 불러오기
     records = db.collection("ankle_records").where("user", "==", st.session_state.user).stream()
     data = [r.to_dict() for r in records]
     df = pd.DataFrame(data)
@@ -73,7 +72,7 @@ elif st.session_state.page == "home":
 
         st.line_chart(df.set_index("date")[["instability", "pain", "activity"]])
 
-        # ----- 고급 경고 분석 -----
+        # 🔹 고급 경고 분석
         recent = df.tail(7)
         avg_pain = recent["pain"].mean()
         incidents = (recent["sprain"] == "있음").sum()
@@ -92,7 +91,7 @@ elif st.session_state.page == "home":
     else:
         st.info("아직 기록이 없습니다. 상단 버튼을 눌러 첫 기록을 남겨보세요!")
 
-    # ----- 건강 정보 섹션 -----
+    # 🔹 건강 정보 섹션
     st.markdown("---")
     st.subheader("📚 발목 건강 정보")
 
@@ -158,7 +157,7 @@ elif st.session_state.page == "record":
                 "shoe": shoe,
                 "surface": surface
             }
-            doc_ref.set(record)  # 수정 포함 저장
+            doc_ref.set(record)
             st.success("오늘 기록이 저장/수정되었습니다 ✅")
             st.session_state.page = "home"
             st.rerun()
