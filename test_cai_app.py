@@ -4,12 +4,13 @@ import datetime
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# 🔹 Firebase 초기화 (중복 방지)
-if not firebase_admin._apps:
-    cred = credentials.Certificate("serviceAccountKey.json")
-    firebase_admin.initialize_app(cred)
+# 🔹 Cloud 환경 호환: API Key 기반 Firestore 초기화
+from google.auth.credentials import AnonymousCredentials
+from google.cloud import firestore as client_firestore
 
-db = firestore.client()
+project_id = "cai-care-app"
+
+db = client_firestore.Client(project=project_id, credentials=AnonymousCredentials())
 
 st.set_page_config(page_title="발목 상태 기록", page_icon="👣", layout="centered")
 
